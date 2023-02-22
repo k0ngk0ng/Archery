@@ -225,7 +225,7 @@ def get_engine(instance=None):  # pragma: no cover
 
         return ClickHouseEngine(instance=instance)
 
-    elif instance.db_type == "dameng":
-        from .dameng import DaMengEngine
+    elif instance.db_type == "dm":
+        from .dm import DMEngine
 
-        return DaMengEngine(instance=instance)
+        return DMEngine(instance=instance)

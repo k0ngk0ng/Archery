@@ -127,7 +127,7 @@ DB_TYPE_CHOICES = (
     ("odps", "ODPS"),
     ("clickhouse", "ClickHouse"),
     ("goinception", "goInception"),
-    ("dm", "DaMeng"),
+    ("dm", "DM"),
 )
 
 
