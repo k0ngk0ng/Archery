@@ -26,8 +26,6 @@ class DMEngine(EngineBase):
 
     def __init__(self, instance=None):
         super(DMEngine, self).__init__(instance=instance)
-        self.service_name = instance.service_name
-        self.sid = instance.sid
 
     def get_connection(self, db_name=None):
         if self.conn:
@@ -37,7 +35,7 @@ class DMEngine(EngineBase):
             server=self.host,
             port=self.port,
             user=self.user,
-            passwd=self.password,
+            password=self.password,
         )
 
     @property
@@ -52,54 +50,16 @@ class DMEngine(EngineBase):
     def auto_backup(self):
         """是否支持备份"""
         return True
-
-    @staticmethod
-    def get_backup_connection():
-        """备份库连接"""
-        archer_config = SysConfig()
-        backup_host = archer_config.get("inception_remote_backup_host")
-        backup_port = int(archer_config.get("inception_remote_backup_port", 3306))
-        backup_user = archer_config.get("inception_remote_backup_user")
-        backup_password = archer_config.get("inception_remote_backup_password")
-        return dmPython.connect(
-            server=backup_host,
-            port=backup_port,
-            user=backup_user,
-            passwd=backup_password,
-        )
-
+    
     @property
     def server_version(self):
         conn = self.get_connection()
-        version = conn.version
+        version = conn.server_version
         return tuple([n for n in version.split(".")[:3]])
 
     def get_all_databases(self):
-        """获取数据库列表， 返回resultSet 供上层调用， 底层实际上是获取dameng的schema列表"""
-        return self._get_all_schemas()
-
-    def _get_all_databases(self):
-        """获取数据库列表, 返回一个ResultSet"""
-        sql = "select name from v$database"
-        result = self.query(sql=sql)
-        db_list = [row[0] for row in result.rows]
-        result.rows = db_list
-        return result
-
-    def _get_all_instances(self):
-        """获取实例列表, 返回一个ResultSet"""
-        sql = "select instance_name from v$instance"
-        result = self.query(sql=sql)
-        instance_list = [row[0] for row in result.rows]
-        result.rows = instance_list
-        return result
-
-    def _get_all_schemas(self):
-        """
-        获取模式列表
-        :return:
-        """
-        result = self.query(sql="SELECT username FROM all_users order by username")
+        """获取数据库列表， 返回resultSet 供上层调用， 底层实际上是获取的schema列表"""
+        result = self.query(sql="select owner from dba_objects where object_type='SCH' order by owner")
         sysschema = (
             "AUD_SYS",
             "ANONYMOUS",
@@ -148,16 +108,31 @@ class DMEngine(EngineBase):
 
     def get_all_tables(self, db_name, **kwargs):
         """获取table 列表, 返回一个ResultSet"""
-        sql = f"""SELECT table_name FROM all_tables WHERE nvl(tablespace_name, 'no tablespace') NOT IN ('SYSTEM', 'SYSAUX') AND OWNER = '{db_name}' AND IOT_NAME IS NULL AND DURATION IS NULL order by table_name
+        sql = f"""select TABLE_NAME from dba_tables where owner='{db_name}'
         """
         result = self.query(db_name=db_name, sql=sql)
-        tb_list = [row[0] for row in result.rows if row[0] not in ["test"]]
+        tb_list = [row[0] for row in result.rows]
         result.rows = tb_list
         return result
 
+    def get_all_columns_by_tb(self, db_name, tb_name, **kwargs):
+        """获取所有字段, 返回一个ResultSet"""
+        result = self.describe_table(db_name, tb_name)
+        column_list = [row[0] for row in result.rows]
+        result.rows = column_list
+        return result
+    
+    def describe_table(self, db_name, tb_name, **kwargs):
+        """return ResultSet"""
+        sql = f"""select * from all_tab_columns where owner='{db_name}' and Table_Name='{tb_name}'
+        """
+        result = self.query(db_name=db_name, sql=sql)
+        return result
+
+
     def get_group_tables_by_db(self, db_name):
         data = {}
-        table_list_sql = f"""SELECT     table_name,   comments     FROM    dba_tab_comments        WHERE     owner = '{db_name}'"""
+        table_list_sql = f"""SELECT table_name, comments FROM dba_tab_comments WHERE owner = '{db_name}'"""
         result = self.query(db_name=db_name, sql=table_list_sql)
         for row in result.rows:
             table_name, table_cmt = row[0], row[1]
@@ -363,32 +338,6 @@ class DMEngine(EngineBase):
         result = self.query(db_name=db_name, sql=sql)
         tb_list = [row[0] for row in result.rows if row[0] not in ["test"]]
         result.rows = tb_list
-        return result
-
-    def get_all_columns_by_tb(self, db_name, tb_name, **kwargs):
-        """获取所有字段, 返回一个ResultSet"""
-        result = self.describe_table(db_name, tb_name)
-        column_list = [row[0] for row in result.rows]
-        result.rows = column_list
-        return result
-
-    def describe_table(self, db_name, tb_name, **kwargs):
-        """return ResultSet"""
-        # https://www.thepolyglotdeveloper.com/2015/01/find-tables-dameng-database-column-name/
-        sql = f"""SELECT
-        a.column_name,
-        data_type,
-        data_length,
-        nullable,
-        data_default,
-        b.comments
-        FROM all_tab_cols a, all_col_comments b
-        WHERE a.table_name = b.table_name
-        and a.owner = b.OWNER
-        and a.COLUMN_NAME = b.COLUMN_NAME
-        and a.table_name = '{tb_name}' and a.owner = '{db_name}' order by column_id
-        """
-        result = self.query(db_name=db_name, sql=sql)
         return result
 
     def object_name_check(self, db_name=None, object_name=""):
