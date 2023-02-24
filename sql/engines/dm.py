@@ -117,22 +117,16 @@ class DMEngine(EngineBase):
 
     def get_all_columns_by_tb(self, db_name, tb_name, **kwargs):
         """获取所有字段, 返回一个ResultSet"""
-        result = self.describe_table(db_name, tb_name)
+        sql = f"""select * from all_tab_columns where owner='{db_name}' and Table_Name='{tb_name}'
+        """
+        result = self.query(db_name=db_name, sql=sql)
         column_list = [row[0] for row in result.rows]
         result.rows = column_list
         return result
     
-    def describe_table(self, db_name, tb_name, **kwargs):
-        """return ResultSet"""
-        sql = f"""select * from all_tab_columns where owner='{db_name}' and Table_Name='{tb_name}'
-        """
-        result = self.query(db_name=db_name, sql=sql)
-        return result
-
-
     def get_group_tables_by_db(self, db_name):
         data = {}
-        table_list_sql = f"""SELECT table_name, comments FROM dba_tab_comments WHERE owner = '{db_name}'"""
+        table_list_sql = f"""SELECT table_name, comments FROM dba_tab_comments WHERE owner='{db_name}'"""
         result = self.query(db_name=db_name, sql=table_list_sql)
         for row in result.rows:
             table_name, table_cmt = row[0], row[1]
@@ -164,7 +158,7 @@ class DMEngine(EngineBase):
                                         on ts.OWNER = tcs.OWNER
                                         and ts.TABLE_NAME = tcs.TABLE_NAME
                                     left join DBA_TAB_STATISTICS bss
-                                        on bss.OWNER = tcs.owner
+                                        on bss.TABLE_OWNER = tcs.owner
                                         and bss.TABLE_NAME = tcs.table_name
     
                                     WHERE
