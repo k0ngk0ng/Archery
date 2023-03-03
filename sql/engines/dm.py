@@ -214,20 +214,15 @@ class DMEngine(EngineBase):
 
     def get_table_index_data(self, db_name, tb_name, **kwargs):
         """获取表格索引信息"""
-        index_sql = f""" SELECT ais.INDEX_NAME "索引名称",
+        index_sql = f""" SELECT 
+	                            ais.INDEX_NAME "索引名称",
                                 ais.uniqueness "唯一性",
                                 ais.index_type "索引类型",
                                 ais.compression "压缩属性",
                                 ais.tablespace_name "表空间",
                                 ais.status "状态",
-                                ais.partitioned "分区",
-                                pis.partitioning_type "分区状态",
-                                pis.locality "是否为LOCAL索引",
-                                pis.alignment "前导列索引"
-                            FROM dba_indexes ais
-                            left join DBA_PART_INDEXES pis
-                                on ais.owner = pis.owner
-                                and ais.index_name = pis.index_name
+                                ais.partitioned "分区" 
+                            FROM DBA_INDEXES ais
                             WHERE
                                 ais.owner = '{db_name}'
                                 AND ais.table_name = '{tb_name}'"""
@@ -330,7 +325,7 @@ class DMEngine(EngineBase):
         """获取object_name 列表, 返回一个ResultSet"""
         sql = f"""SELECT object_name FROM all_objects WHERE OWNER = '{db_name}' """
         result = self.query(db_name=db_name, sql=sql)
-        tb_list = [row[0] for row in result.rows if row[0] not in ["test"]]
+        tb_list = [row[0] for row in result.rows]
         result.rows = tb_list
         return result
 
@@ -500,37 +495,7 @@ class DMEngine(EngineBase):
             for t in reversed(flattened):
                 if t.is_keyword:
                     return True
-            return False
-
-    def explain_check(self, db_name=None, sql="", close_conn=False):
-        # 使用explain进行支持的SQL语法审核，连接需不中断，防止数据库不断fork进程的大批量消耗
-        result = {"msg": "", "rows": 0}
-        try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            if db_name:
-                cursor.execute(f' ALTER SESSION SET CURRENT_SCHEMA = "{db_name}" ')
-            if re.match(r"^explain", sql, re.I):
-                sql = sql
-            else:
-                sql = f"explain plan for {sql}"
-            sql = sql.rstrip(";")
-            cursor.execute(sql)
-            # 获取影响行数
-            cursor.execute(f"select CARDINALITY from SYS.PLAN_TABLE$ where id = 0")
-            rows = cursor.fetchone()
-            conn.rollback()
-            if not rows:
-                result["rows"] = 0
-            else:
-                result["rows"] = rows[0]
-        except Exception as e:
-            logger.warning(f"DM 语句执行报错，语句：{sql}，错误信息{traceback.format_exc()}")
-            result["msg"] = str(e)
-        finally:
-            if close_conn:
-                self.close()
-            return result
+            return False    
 
     def query_check(self, db_name=None, sql=""):
         # 查询语句的检查、注释去除、切分
@@ -561,11 +526,9 @@ class DMEngine(EngineBase):
     def filter_sql(self, sql="", limit_num=0):
         sql_lower = sql.lower()
         # 对查询sql增加limit限制
-        if re.match(r"^select|^with", sql_lower) and not (
-            re.match(r"^select\s+sql_audit.", sql_lower)
-            and sql_lower.find(" sql_audit where rownum <= ") != -1
-        ):
-            sql = f"select sql_audit.* from ({sql.rstrip(';')}) sql_audit where rownum <= {limit_num}"
+        if re.match(r"^select", sql_lower):
+            if sql_lower.find(" top ") == -1:
+                return sql_lower.replace("select", "select top {}".format(limit_num))
         return sql.strip()
 
     def query(self, db_name=None, sql="", limit_num=0, close_conn=True, **kwargs):
@@ -573,29 +536,14 @@ class DMEngine(EngineBase):
         result_set = ResultSet(full_sql=sql)
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            if db_name:
-                cursor.execute(f' ALTER SESSION SET CURRENT_SCHEMA = "{db_name}" ')
-            sql = sql.rstrip(";")
-            # 支持oralce查询SQL执行计划语句
-            if re.match(r"^explain", sql, re.I):
-                cursor.execute(sql)
-                # 重置SQL文本，获取SQL执行计划
-                sql = f"select PLAN_TABLE_OUTPUT from table(dbms_xplan.display)"
+            cursor = conn.cursor()            
             cursor.execute(sql)
-            fields = cursor.description
-            if any(x[1] == cx_DM.CLOB for x in fields):
-                rows = [
-                    tuple([(c.read() if type(c) == cx_DM.LOB else c) for c in r])
-                    for r in cursor
-                ]
-                if int(limit_num) > 0:
-                    rows = rows[0 : int(limit_num)]
+            if int(limit_num) > 0:
+                rows = cursor.fetchmany(int(limit_num))
             else:
-                if int(limit_num) > 0:
-                    rows = cursor.fetchmany(int(limit_num))
-                else:
-                    rows = cursor.fetchall()
+                rows = cursor.fetchall()
+            fields = cursor.description
+
             result_set.column_list = [i[0] for i in fields] if fields else []
             result_set.rows = [tuple(x) for x in rows]
             result_set.affected_rows = len(result_set.rows)
@@ -619,7 +567,6 @@ class DMEngine(EngineBase):
     def execute_check(self, db_name=None, sql="", close_conn=True):
         """
         上线单执行前的检查, 返回Review set
-        update by Jan.song 20200302
         使用explain对数据修改预计进行检测
         """
         config = SysConfig()
@@ -961,359 +908,10 @@ class DMEngine(EngineBase):
         return check_result
 
     def execute_workflow(self, workflow, close_conn=True):
-        """执行上线单，返回Review set
-        原来的逻辑是根据 sql_content简单来分割SQL，进而再执行这些SQL
-        新的逻辑变更为根据审核结果中记录的sql来执行，
-        如果是PLSQL存储过程等对象定义操作，还需检查确认新建对象是否编译通过!
-        """
-        review_content = workflow.sqlworkflowcontent.review_content
-        review_result = json.loads(review_content)
-        sqlitemList = get_exec_sqlitem_list(review_result, workflow.db_name)
-
-        sql = workflow.sqlworkflowcontent.sql_content
-        execute_result = ReviewSet(full_sql=sql)
-
-        line = 1
-        statement = None
-        try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            # 获取执行工单时间，用于备份SQL的日志挖掘起始时间
-            cursor.execute(f"alter session set nls_date_format='yyyy-mm-dd hh24:mi:ss'")
-            cursor.execute(f"select sysdate from dual")
-            rows = cursor.fetchone()
-            begin_time = rows[0]
-            # 逐条执行切分语句，追加到执行结果中
-            for sqlitem in sqlitemList:
-                statement = sqlitem.statement
-                if sqlitem.stmt_type == "SQL":
-                    statement = statement.rstrip(";")
-                # 如果是DDL的工单，获取对象的原定义，并保存到sql_rollback.undo_sql
-                # 需要授权 grant execute on dbms_metadata to xxxxx
-                if workflow.syntax_type == 1:
-                    object_name = self.get_sql_first_object_name(statement)
-                    back_obj_sql = f"""select dbms_metadata.get_ddl(object_type,object_name,owner)
-                    from all_objects where (object_name=upper( '{object_name}' ) or OBJECT_NAME = '{sqlitem.object_name}')
-                    and owner='{workflow.db_name}'
-                                        """
-                    cursor.execute(back_obj_sql)
-                    metdata_back_flag = self.metdata_backup(workflow, cursor, statement)
-
-                with FuncTimer() as t:
-                    if statement != "":
-                        cursor.execute(statement)
-                        conn.commit()
-
-                rowcount = cursor.rowcount
-                stagestatus = "Execute Successfully"
-                if (
-                    sqlitem.stmt_type == "PLSQL"
-                    and sqlitem.object_name
-                    and sqlitem.object_name != "ANONYMOUS"
-                    and sqlitem.object_name != ""
-                ):
-                    query_obj_sql = f"""SELECT OBJECT_NAME, STATUS, TO_CHAR(LAST_DDL_TIME, 'YYYY-MM-DD HH24:MI:SS') FROM ALL_OBJECTS
-                                         WHERE OWNER = '{sqlitem.object_owner}'
-                                         AND OBJECT_NAME = '{sqlitem.object_name}'
-                                        """
-                    cursor.execute(query_obj_sql)
-                    row = cursor.fetchone()
-                    if row:
-                        status = row[1]
-                        if status and status == "INVALID":
-                            stagestatus = (
-                                "Compile Failed. Object "
-                                + sqlitem.object_owner
-                                + "."
-                                + sqlitem.object_name
-                                + " is invalid."
-                            )
-                    else:
-                        stagestatus = (
-                            "Compile Failed. Object "
-                            + sqlitem.object_owner
-                            + "."
-                            + sqlitem.object_name
-                            + " doesn't exist."
-                        )
-
-                    if stagestatus != "Execute Successfully":
-                        raise Exception(stagestatus)
-
-                execute_result.rows.append(
-                    ReviewResult(
-                        id=line,
-                        errlevel=0,
-                        stagestatus=stagestatus,
-                        errormessage="None",
-                        sql=statement,
-                        affected_rows=cursor.rowcount,
-                        execute_time=t.cost,
-                    )
-                )
-                line += 1
-        except Exception as e:
-            logger.warning(
-                f"DM命令执行报错，工单id：{workflow.id}，语句：{statement or sql}， 错误信息：{traceback.format_exc()}"
-            )
-            execute_result.error = str(e)
-            # conn.rollback()
-            # 追加当前报错语句信息到执行结果中
-            execute_result.rows.append(
-                ReviewResult(
-                    id=line,
-                    errlevel=2,
-                    stagestatus="Execute Failed",
-                    errormessage=f"异常信息：{e}",
-                    sql=statement or sql,
-                    affected_rows=0,
-                    execute_time=0,
-                )
-            )
-            line += 1
-            # 报错语句后面的语句标记为审核通过、未执行，追加到执行结果中
-            for sqlitem in sqlitemList[line - 1 :]:
-                execute_result.rows.append(
-                    ReviewResult(
-                        id=line,
-                        errlevel=0,
-                        stagestatus="Audit completed",
-                        errormessage=f"前序语句失败, 未执行",
-                        sql=sqlitem.statement,
-                        affected_rows=0,
-                        execute_time=0,
-                    )
-                )
-                line += 1
-        finally:
-            # 备份
-            if workflow.is_backup:
-                try:
-                    cursor.execute(f"select sysdate from dual")
-                    rows = cursor.fetchone()
-                    end_time = rows[0]
-                    self.backup(
-                        workflow,
-                        cursor=cursor,
-                        begin_time=begin_time,
-                        end_time=end_time,
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"DM工单备份异常，工单id：{workflow.id}， 错误信息：{traceback.format_exc()}"
-                    )
-            if close_conn:
-                self.close()
-        return execute_result
-
-    def backup(self, workflow, cursor, begin_time, end_time):
-        """
-        :param workflow: 工单对象，作为备份记录与工单的关联列
-        :param cursor: 执行SQL的当前会话游标
-        :param begin_time: 执行SQL开始时间
-        :param end_time: 执行SQL结束时间
-        :return:
-        """
-        # add Jan.song 2020402
-        # 生成回滚SQL,执行用户需要有grant select any transaction to 权限，需要有grant execute on dbms_logmnr to权限
-        # 数据库需开启最小化附加日志alter database add supplemental log data;
-        # 需为归档模式;开启附件日志会增加redo日志量,一般不会有多大影响，需评估归档磁盘空间，redo磁盘IO性能
-        try:
-            # 备份存放数据库和MySQL备份库统一，需新建备份用database和table，table存放备份SQL，记录使用workflow.id关联上线工单
-            workflow_id = workflow.id
-            conn = self.get_backup_connection()
-            backup_cursor = conn.cursor()
-            backup_cursor.execute(f"""create database if not exists ora_backup;""")
-            backup_cursor.execute(f"use ora_backup;")
-            backup_cursor.execute(
-                f"""CREATE TABLE if not exists `sql_rollback` (
-                                       `id` bigint(20) NOT NULL AUTO_INCREMENT,
-                                       `redo_sql` mediumtext,
-                                       `undo_sql` mediumtext,
-                                       `workflow_id` bigint(20) NOT NULL,
-                                        PRIMARY KEY (`id`),
-                                        key `idx_sql_rollback_01` (`workflow_id`)
-                                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"""
-            )
-            # 使用logminer抓取回滚SQL
-            logmnr_start_sql = f"""begin
-                                        dbms_logmnr.start_logmnr(
-                                        starttime=>to_date('{begin_time}','yyyy-mm-dd hh24:mi:ss'),
-                                        endtime=>to_date('{end_time}','yyyy/mm/dd hh24:mi:ss'),
-                                        options=>dbms_logmnr.dict_from_online_catalog + dbms_logmnr.continuous_mine);
-                                    end;"""
-            undo_sql = f"""select 
-                           xmlagg(xmlparse(content sql_redo wellformed)  order by  scn,rs_id,ssn,rownum).getclobval() ,
-                           xmlagg(xmlparse(content sql_undo wellformed)  order by  scn,rs_id,ssn,rownum).getclobval() 
-                           from v$logmnr_contents
-                           where  SEG_OWNER not in ('SYS')
-                           and session# = (select sid from v$mystat where rownum = 1)
-                           and serial# = (select serial# from v$session s where s.sid = (select sid from v$mystat where rownum = 1 ))  
-                           group by  scn,rs_id,ssn  order by scn desc"""
-            logmnr_end_sql = f"""begin
-                                    dbms_logmnr.end_logmnr;
-                                 end;"""
-            cursor.execute(logmnr_start_sql)
-            cursor.execute(undo_sql)
-            rows = cursor.fetchall()
-            cursor.execute(logmnr_end_sql)
-            if len(rows) > 0:
-                for row in rows:
-                    redo_sql = f"{row[0]}"
-                    redo_sql = redo_sql.replace("'", "\\'")
-                    if row[1] is None:
-                        undo_sql = f" "
-                    else:
-                        undo_sql = f"{row[1]}"
-                    undo_sql = undo_sql.replace("'", "\\'")
-                    # 回滚SQL入库
-                    sql = f"""insert into sql_rollback(redo_sql,undo_sql,workflow_id) values('{redo_sql}','{undo_sql}',{workflow_id});"""
-                    backup_cursor.execute(sql)
-        except Exception as e:
-            logger.warning(f"备份失败，错误信息{traceback.format_exc()}")
-            return False
-        finally:
-            # 关闭连接
-            if conn:
-                conn.close()
-        return True
-
-    def metdata_backup(self, workflow, cursor, redo_sql):
-        """
-        :param workflow: 工单对象，作为备份记录与工单的关联列
-        :param cursor: 执行SQL的当前会话游标，保存metadata
-        :param redo_sql: 执行的SQL
-        :return:
-        """
-        try:
-            # 备份存放数据库和MySQL备份库统一，需新建备份用database和table，table存放备份SQL，记录使用workflow.id关联上线工单
-            workflow_id = workflow.id
-            conn = self.get_backup_connection()
-            backup_cursor = conn.cursor()
-            backup_cursor.execute(f"""create database if not exists ora_backup;""")
-            backup_cursor.execute(f"use ora_backup;")
-            backup_cursor.execute(
-                f"""CREATE TABLE if not exists `sql_rollback` (
-                                       `id` bigint(20) NOT NULL AUTO_INCREMENT,
-                                       `redo_sql` mediumtext,
-                                       `undo_sql` mediumtext,
-                                       `workflow_id` bigint(20) NOT NULL,
-                                        PRIMARY KEY (`id`),
-                                        key `idx_sql_rollback_01` (`workflow_id`)
-                                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"""
-            )
-            rows = cursor.fetchall()
-            if len(rows) > 0:
-                for row in rows:
-                    if row[0] is None:
-                        undo_sql = f" "
-                    else:
-                        undo_sql = f"{row[0]}"
-                    undo_sql = undo_sql.replace("'", "\\'")
-                    # 回滚SQL入库
-                    sql = f"""insert into sql_rollback(redo_sql,undo_sql,workflow_id) values('{redo_sql}','{undo_sql}',{workflow_id});"""
-                    backup_cursor.execute(sql)
-        except Exception as e:
-            logger.warning(f"备份失败，错误信息{traceback.format_exc()}")
-            return False
-        finally:
-            # 关闭连接
-            if conn:
-                conn.close()
-        return True
-
-    def get_rollback(self, workflow):
-        """
-         add by Jan.song 20200402
-        获取回滚语句，并且按照执行顺序倒序展示，return ['源语句'，'回滚语句']
-        """
-        list_execute_result = json.loads(workflow.sqlworkflowcontent.execute_result)
-        # 回滚语句倒序展示
-        list_execute_result.reverse()
-        list_backup_sql = []
-        try:
-            # 创建连接
-            conn = self.get_backup_connection()
-            cur = conn.cursor()
-            sql = f"""select redo_sql,undo_sql from sql_rollback where workflow_id = {workflow.id} order by id;"""
-            cur.execute(f"use ora_backup;")
-            cur.execute(sql)
-            list_tables = cur.fetchall()
-            for row in list_tables:
-                redo_sql = row[0]
-                undo_sql = row[1]
-                # 拼接成回滚语句列表,['源语句'，'回滚语句']
-                list_backup_sql.append([redo_sql, undo_sql])
-        except Exception as e:
-            logger.error(f"获取回滚语句报错，异常信息{traceback.format_exc()}")
-            raise Exception(e)
-        # 关闭连接
-        if conn:
-            conn.close()
-        return list_backup_sql
-
-    def sqltuningadvisor(self, db_name=None, sql="", close_conn=True, **kwargs):
-        """
-        add by Jan.song 20200421
-        使用DBMS_SQLTUNE包做sql tuning支持
-        执行用户需要有advior角色
-        返回 ResultSet
-        """
-        result_set = ResultSet(full_sql=sql)
-        task_name = "sqlaudit" + f"""{threading.currentThread().ident}"""
-        task_begin = 0
-        try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            sql = sql.rstrip(";")
-            # 创建分析任务
-            create_task_sql = f"""DECLARE
-                                  my_task_name VARCHAR2(30);
-                                  my_sqltext  CLOB;
-                                  BEGIN
-                                  my_sqltext := '{sql}';
-                                  my_task_name := DBMS_SQLTUNE.CREATE_TUNING_TASK(
-                                  sql_text    => my_sqltext,
-                                  user_name   => '{db_name}',
-                                  scope       => 'COMPREHENSIVE',
-                                  time_limit  => 30,
-                                  task_name   => '{task_name}',
-                                  description => 'tuning');
-                                  DBMS_SQLTUNE.EXECUTE_TUNING_TASK( task_name => '{task_name}');
-                                  END;"""
-            task_begin = 1
-            cursor.execute(create_task_sql)
-            # 获取分析报告
-            get_task_sql = (
-                f"""select DBMS_SQLTUNE.REPORT_TUNING_TASK( '{task_name}') from dual"""
-            )
-            cursor.execute(get_task_sql)
-            fields = cursor.description
-            if any(x[1] == cx_DM.CLOB for x in fields):
-                rows = [
-                    tuple([(c.read() if type(c) == cx_DM.LOB else c) for c in r])
-                    for r in cursor
-                ]
-            else:
-                rows = cursor.fetchall()
-            result_set.column_list = [i[0] for i in fields] if fields else []
-            result_set.rows = [tuple(x) for x in rows]
-            result_set.affected_rows = len(result_set.rows)
-        except Exception as e:
-            logger.warning(f"DM 语句执行报错，语句：{sql}，错误信息{traceback.format_exc()}")
-            result_set.error = str(e)
-        finally:
-            # 结束分析任务
-            if task_begin == 1:
-                end_sql = f"""DECLARE
-                             begin
-                             dbms_sqltune.drop_tuning_task('{task_name}');
-                             end;"""
-                cursor.execute(end_sql)
-            if close_conn:
-                self.close()
-        return result_set
-
+        return self.execute(
+            db_name=workflow.db_name, sql=workflow.sqlworkflowcontent.sql_content
+        )
+   
     def execute(self, db_name=None, sql="", close_conn=True):
         """原生执行语句"""
         result = ResultSet(full_sql=sql)
@@ -1324,133 +922,12 @@ class DMEngine(EngineBase):
                 statement = statement.rstrip(";")
                 cursor.execute(statement)
         except Exception as e:
-            logger.warning(f"DM语句执行报错，语句：{sql}，错误信息{traceback.format_exc()}")
+            logger.warning(f"DM 语句执行报错，语句：{sql}，错误信息{traceback.format_exc()}")
             result.error = str(e)
         if close_conn:
             self.close()
-        return result
-
-    def session_list(self, command_type):
-        """获取会话信息"""
-        base_sql = """select 
-                       s.sid,
-                       s.serial#,
-                       s.status,
-                       s.username,
-                       q.sql_text,
-                       q.sql_fulltext,
-                       s.machine,
-                       s.sql_exec_start
-                    from v$process p, v$session s, v$sqlarea q 
-                    where p.addr = s.paddr  
-                       and s.sql_hash_value = q.hash_value"""
-        if not command_type:
-            command_type = "Active"
-        if command_type == "All":
-            sql = base_sql + ";"
-        elif command_type == "Active":
-            sql = "{} and s.status = 'ACTIVE';".format(base_sql)
-        elif command_type == "Others":
-            sql = "{} and s.status != 'ACTIVE';".format(base_sql)
-        else:
-            sql = ""
-
-        return self.query(sql=sql)
-
-    def get_kill_command(self, thread_ids):
-        """由传入的sid+serial#列表生成kill命令"""
-        # 校验传参，thread_ids格式：[[sid, serial#], [sid, serial#]]
-        if [
-            k
-            for k in [[j for j in i if not isinstance(j, int)] for i in thread_ids]
-            if k
-        ]:
-            return None
-        sql = """select 'alter system kill session ' || '''' || s.sid || ',' || s.serial# || '''' || ' immediate' || ';'
-                 from v$process p, v$session s, v$sqlarea q
-                 where p.addr = s.paddr
-                 and s.sql_hash_value = q.hash_value
-                 and s.sid || ',' || s.serial# in ({});""".format(
-            ",".join(f"'{str(tid[0])},{str(tid[1])}'" for tid in thread_ids)
-        )
-        all_kill_sql = self.query(sql=sql)
-        kill_sql = ""
-        for row in all_kill_sql.rows:
-            kill_sql = kill_sql + row[0]
-
-        return kill_sql
-
-    def kill_session(self, thread_ids):
-        """kill会话"""
-        # 校验传参，thread_ids格式：[[sid, serial#], [sid, serial#]]
-        if [
-            k
-            for k in [[j for j in i if not isinstance(j, int)] for i in thread_ids]
-            if k
-        ]:
-            return ResultSet(full_sql="")
-        sql = """select 'alter system kill session ' || '''' || s.sid || ',' || s.serial# || '''' || ' immediate' || ';'
-                         from v$process p, v$session s, v$sqlarea q
-                         where p.addr = s.paddr
-                         and s.sql_hash_value = q.hash_value
-                         and s.sid || ',' || s.serial# in ({});""".format(
-            ",".join(f"'{str(tid[0])},{str(tid[1])}'" for tid in thread_ids)
-        )
-        all_kill_sql = self.query(sql=sql)
-        kill_sql = ""
-        for row in all_kill_sql.rows:
-            kill_sql = kill_sql + row[0]
-        return self.execute(sql=kill_sql)
-
-    def tablespace(self, offset=0, row_count=14):
-        """获取表空间信息"""
-        row_count = offset + row_count
-        sql = """
-        select f.* from (
-            select rownum rownumber, e.* from (
-                select a.tablespace_name,
-                d.contents tablespace_type,
-                d.status,
-                round(a.bytes/1024/1024,2) total_space,
-                round(b.bytes/1024/1024,2) used_space,
-                round((b.bytes * 100) / a.bytes,2) pct_used
-                from sys.sm$ts_avail a, sys.sm$ts_used b, sys.sm$ts_free c, dba_tablespaces d
-                where a.tablespace_name = b.tablespace_name
-                and a.tablespace_name = c.tablespace_name
-                and a.tablespace_name = d.tablespace_name
-                order by total_space desc ) e
-                where rownum <={}
-        ) f where f.rownumber >={};""".format(
-            row_count, offset
-        )
-        return self.query(sql=sql)
-
-    def tablespace_count(self):
-        """获取表空间数量"""
-        sql = """select count(*) from dba_tablespaces where contents != 'TEMPORARY'"""
-        return self.query(sql=sql)
-
-    def lock_info(self):
-        """获取锁信息"""
-        sql = """
-        select c.username,
-               b.owner object_owner,
-               a.object_id,
-               b.object_name,
-               a.locked_mode,
-               c.sid related_sid,
-               c.serial# related_serial#,
-               c.machine,
-               d.sql_text related_sql,
-               d.sql_fulltext related_sql_full,
-               c.sql_exec_start related_sql_exec_start
-        from v$locked_object a,dba_objects b, v$session c, v$sqlarea d
-        where b.object_id = a.object_id
-        and a.session_id = c.sid
-        and c.sql_hash_value = d.hash_value;"""
-
-        return self.query(sql=sql)
-
+        return result     
+       
     def close(self):
         if self.conn:
             self.conn.close()
