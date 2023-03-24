@@ -508,7 +508,7 @@ def config(request):
     # 获取所有实例标签
     instance_tags = InstanceTag.objects.all()
     # 支持自动审核的数据库类型
-    db_type = ["mysql", "oracle", "mongo", "clickhouse"]
+    db_type = ["mysql", "oracle", "mongo", "clickhouse", "dm"]
     # 获取所有配置项
     all_config = Config.objects.all().values("item", "value")
     sys_config = {}
