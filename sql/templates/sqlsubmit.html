@@ -635,7 +635,7 @@
                     if (data.status === 0) {
                         $("optgroup[id^='optgroup']").empty();
                         let result = data['data']
-                        const supportDb = ['mysql', 'mssql', 'redis', 'pgsql', 'oracle', 'mongo', 'phoenix', 'clickhouse']
+                        const supportDb = ['mysql', 'mssql', 'redis', 'pgsql', 'oracle', 'mongo', 'phoenix', 'clickhouse', 'dm']
                         for (let i of result) {
                             let instance = "<option value=\"" + i.instance_name + "\" instance-id=" + i.id + ">" + i.instance_name + "</option>";
                             if (supportDb.indexOf(i.db_type) !== -1) {
