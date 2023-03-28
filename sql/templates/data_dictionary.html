@@ -273,6 +273,82 @@
                         </div>
                     </div>
                 </div> <!--modal-body-->
+                <div class="modal-body" id="modal-body-dm" >
+                    <div class="panel panel-default">
+                        <div class="panel-heading">表信息</div>
+                        <div class="panel-body">
+                            <div class="table-responsive">
+                                <table id="meta_data" class="table table-striped table-hover"
+                                       style="table-layout:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                                    <tbody>
+                                        <tr>
+                                            <th>表名</th>
+                                            <td id="TABLE_NAME"></td>
+                                            <th>表类型</th>
+                                            <td id="TABLE_TYPE"></td>
+
+                                        </tr>
+                                        <tr>
+                                            <th>段类型</th>
+                                            <td id="SEGMENT_TYPE"></td>
+                                            <th>压缩</th>
+                                            <td id="COMPRESSION"></td>
+                                        </tr>
+                                        <tr></tr>
+                                            <th>表空间</th>
+                                            <td id="TABLESPACE_NAME"></td>
+                                            <th>表中的记录数</th>
+                                            <td id="NUM_ROWS"></td>
+                                        </tr>
+                                        <tr>
+                                            <th>表中数据所占的数据块数</th>
+                                            <td id="BLOCKS"></td>
+                                            <th>表中的空块数</th>
+                                            <td id="EMPTY_BLOCKS"></td>
+                                        </tr>
+                                        <tr>
+                                            <th>数据块中平均的使用空间</th>
+                                            <td id="AVG_SPACE"></td>
+                                            <th>表中行连接和行迁移的数量</th>
+                                            <td id="CHAIN_CNT"></td>
+                                        </tr>
+                                        <tr>
+                                            <th>每条记录的平均长度</th>
+                                            <td id="AVG_ROW_LEN"></td>
+                                            <th>上次统计信息搜集的时间</th>
+                                            <td id="LAST_ANALYZED"></td>
+                                        </tr>
+                                        <tr>
+                                            <th>表注释</th>
+                                            <td id="COMMENTS"></td>
+
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="panel panel-default">
+                        <div class="panel-heading">列信息</div>
+                        <div class="panel-body">
+                            <div class="table-responsive">
+                                <table id="field-list-dm" data-toggle="table" class="table table-striped table-hover"
+                                       style="table-layout:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="panel panel-default">
+                        <div class="panel-heading">索引信息</div>
+                        <div class="panel-body">
+                            <div class="table-responsive">
+                                <table id="index-list-dm" data-toggle="table" class="table table-striped table-hover"
+                                       style="table-layout:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div> <!--modal-body-->
             </div><!-- /.modal-content -->
         </div><!-- /.modal-dialog -->
     </div><!-- /.modal -->
@@ -488,6 +564,8 @@
                             //console.log("hide_mysql");
                         } else if (inst_db_type === 'mssql') {
                             showModalBody('mssql');
+                        } else if (inst_db_type === 'dm') {
+                            showModalBody('dm');
                         }
                         var meta_data_columns = result['meta_data']['column_list'];
                         var meta_data_values = result['meta_data']['rows'];
