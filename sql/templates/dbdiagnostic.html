@@ -27,6 +27,7 @@
                         <optgroup id="optgroup-mysql" label="MySQL"></optgroup>
                         <optgroup id="optgroup-mongo" label="MongoDB"></optgroup>
                         <optgroup id="optgroup-oracle" label="Oracle"></optgroup>
+                        <optgroup id="optgroup-dm" label="DM"></optgroup>
                 </select>
             </div>
             <div id="command-div" class="form-group">
@@ -955,6 +956,7 @@
                                 $("#optgroup-mysql").empty();
                                 $("#optgroup-mongo").empty();
                                 $("#optgroup-oracle").empty();
+                                $("#optgroup-dm").empty();
                                 for (let i = 0; i < result.length; i++) {
                                     let instance = "<option value=\"" + result[i]['instance_name'] + "\">" + result[i]['instance_name'] + "</option>";
                                     // $("#instance_name").append(instance);
@@ -964,6 +966,8 @@
                                         $("#optgroup-mongo").append(instance);
                                     } else if (result[i]['db_type'] === 'oracle') {
                                         $("#optgroup-oracle").append(instance);
+                                    } else if (result[i]['db_type'] === 'dm') {
+                                        $("#optgroup-dm").append(instance);
                                     }
                                 }
                                 $('#instance_name').selectpicker('render');
