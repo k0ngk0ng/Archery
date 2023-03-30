@@ -169,38 +169,23 @@ class DMEngine(EngineBase):
 
     def get_table_desc_data(self, db_name, tb_name, **kwargs):
         """获取表格字段信息"""
-        desc_sql = f"""SELECT bcs.COLUMN_NAME "列名",
-                            ccs.comments "列注释" ,
-                            bcs.data_type || case
-                             when bcs.data_precision is not null and nvl(data_scale, 0) > 0 then
-                              '(' || bcs.data_precision || ',' || data_scale || ')'
-                             when bcs.data_precision is not null and nvl(data_scale, 0) = 0 then
-                              '(' || bcs.data_precision || ')'
-                             when bcs.data_precision is null and data_scale is not null then
-                              '(*,' || data_scale || ')'
-                             when bcs.char_length > 0 then
-                              '(' || bcs.char_length || case char_used
-                                when 'B' then
-                                 ' Byte'
-                                when 'C' then
-                                 ' Char'
-                                else
-                                 null
-                              end || ')'
-                            end "字段类型",
-                            bcs.DATA_DEFAULT "字段默认值",
-                            decode(nullable, 'N', ' NOT NULL') "是否为空",
+        desc_sql = f"""SELECT bcs.COLUMN_NAME "列名",                            
+                            bcs.DATA_TYPE "列类型",
+                            bcs.DATA_LENGTH "类型长度",
+                            decode(bcs.NULLABLE, 'N', 'NO', 'Y', 'YES') "是否为空",
+                            bcs.DATA_DEFAULT "默认值",
                             ics.INDEX_NAME "所属索引",
-                            acs.constraint_type "约束类型"
-                        FROM  dba_tab_columns bcs
-                        left  join dba_col_comments ccs
-                            on  bcs.OWNER = ccs.owner
-                            and  bcs.TABLE_NAME = ccs.table_name
-                            and  bcs.COLUMN_NAME = ccs.column_name
-                        left  join dba_ind_columns ics
-                            on  bcs.OWNER = ics.TABLE_OWNER
-                            and  bcs.TABLE_NAME = ics.table_name
-                            and  bcs.COLUMN_NAME = ics.column_name
+                            acs.constraint_type "约束类型",
+                            ccs.comments "列说明"     
+                        FROM dba_tab_columns bcs
+                        left join dba_col_comments ccs
+                            on bcs.OWNER = ccs.owner
+                            and bcs.TABLE_NAME = ccs.table_name
+                            and bcs.COLUMN_NAME = ccs.column_name
+                        left join dba_ind_columns ics
+                            on bcs.OWNER = ics.TABLE_OWNER
+                            and bcs.TABLE_NAME = ics.table_name
+                            and bcs.COLUMN_NAME = ics.column_name
                         left join dba_constraints acs
                             on acs.owner = ics.TABLE_OWNER
                             and acs.table_name = ics.TABLE_NAME
@@ -208,7 +193,7 @@ class DMEngine(EngineBase):
                         WHERE
                             bcs.OWNER='{db_name}'
                             AND bcs.TABLE_NAME='{tb_name}'
-                        ORDER BY bcs.COLUMN_NAME"""
+                        ORDER BY bcs.COLUMN_ID"""
         _desc_data = self.query(db_name=db_name, sql=desc_sql)
         return {"column_list": _desc_data.column_list, "rows": _desc_data.rows}
 
@@ -235,27 +220,12 @@ class DMEngine(EngineBase):
         sql_cols = f""" SELECT bcs.TABLE_NAME TABLE_NAME,
                                    tcs.COMMENTS TABLE_COMMENTS,
                                    bcs.COLUMN_NAME COLUMN_NAME,
-                                   bcs.data_type || case
-                                     when bcs.data_precision is not null and nvl(data_scale, 0) > 0 then
-                                      '(' || bcs.data_precision || ',' || data_scale || ')'
-                                     when bcs.data_precision is not null and nvl(data_scale, 0) = 0 then
-                                      '(' || bcs.data_precision || ')'
-                                     when bcs.data_precision is null and data_scale is not null then
-                                      '(*,' || data_scale || ')'
-                                     when bcs.char_length > 0 then
-                                      '(' || bcs.char_length || case char_used
-                                        when 'B' then
-                                         ' Byte'
-                                        when 'C' then
-                                         ' Char'
-                                        else
-                                         null
-                                      end || ')'
-                                   end data_type,
-                                   bcs.DATA_DEFAULT,
-                                   decode(nullable, 'N', ' NOT NULL') nullable,
-                                   t1.index_name,
-                                   lcs.comments comments
+                                   bcs.DATA_TYPE,
+                                   bcs.DATA_LENGTH,
+                                   decode(bcs.NULLABLE, 'N', 'NO', 'Y', 'YES') nullable,
+                                   bcs.DATA_DEFAULT COLUMN_DEFAULT,
+                                   t1.index_name COLUMN_KEY,
+                                   lcs.comments COLUMN_COMMENT
                               FROM dba_tab_columns bcs
                               left join dba_col_comments lcs
                                 on bcs.OWNER = lcs.owner
@@ -277,7 +247,7 @@ class DMEngine(EngineBase):
                                AND t1.TABLE_NAME = bcs.TABLE_NAME
                                AND t1.column_name = bcs.COLUMN_NAME
                              WHERE bcs.OWNER = '{db_name}'
-                             order by bcs.TABLE_NAME, comments"""
+                             order by bcs.TABLE_NAME, COLUMN_COMMENT"""
         cols_req = self.query(sql=sql_cols, close_conn=False).rows
 
         # 给查询结果定义列名，query_engine.query的游标是0 1 2
@@ -288,8 +258,9 @@ class DMEngine(EngineBase):
                 "TABLE_COMMENTS",
                 "COLUMN_NAME",
                 "COLUMN_TYPE",
-                "COLUMN_DEFAULT",
+                "DATA_LENGTH",
                 "IS_NULLABLE",
+                "COLUMN_DEFAULT",
                 "COLUMN_KEY",
                 "COLUMN_COMMENT",
             ],
@@ -301,9 +272,10 @@ class DMEngine(EngineBase):
             _meta = dict()
             engine_keys = [
                 {"key": "COLUMN_NAME", "value": "字段名"},
-                {"key": "COLUMN_TYPE", "value": "数据类型"},
-                {"key": "COLUMN_DEFAULT", "value": "默认值"},
+                {"key": "COLUMN_TYPE", "value": "列类型"},
+                {"key": "DATA_LENGTH", "value": "数据长度"},
                 {"key": "IS_NULLABLE", "value": "允许非空"},
+                {"key": "COLUMN_DEFAULT", "value": "默认值"},
                 {"key": "COLUMN_KEY", "value": "是否主键"},
                 {"key": "COLUMN_COMMENT", "value": "备注"},
             ]
@@ -926,7 +898,7 @@ class DMEngine(EngineBase):
             result.error = str(e)
         if close_conn:
             self.close()
-        return result     
+        return result
        
     def close(self):
         if self.conn:
