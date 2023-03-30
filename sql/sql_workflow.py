@@ -157,7 +157,7 @@ def detail_content(request):
                 ReviewResult(
                     id=1,
                     sql=workflow_detail.sqlworkflowcontent.sql_content,
-                    errormessage="Json decode failed." "执行结果Json解析失败, 请联系管理员",
+                    errormessage="-",
                 )
             ]
             rows = review_result.json()
